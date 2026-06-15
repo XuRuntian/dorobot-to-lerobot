@@ -22,12 +22,14 @@ Python 3.10+ is recommended. This project uses `pyproject.toml` for dependency m
 
 ```bash
 uv run dorobot-to-lerobot \
-  --input /path/to/raw_dataset_root \
+  --input /path/to/raw_task_or_dataset_root \
   --output /path/to/merged_dataset
 ```
 
-`--input` is the parent directory containing task folders. By default, every
-task folder under `--input` is processed.
+`--input` can be either one raw task directory containing episode folders, or a
+parent directory containing multiple task folders. By default, one task is
+merged when `--input` already points at a task; otherwise every task folder
+under `--input` is processed.
 
 `--output` is the output root. Each task is written to a subdirectory named
 from `meta/common_record.json` using `task_name` and `task_id`.
@@ -123,7 +125,7 @@ Skipped source episodes and their reasons are recorded in
 ## CLI Reference
 
 ```text
---input PATH              Raw task parent directory.
+--input PATH              Raw task directory or task parent directory.
 --output PATH             Merged dataset output root.
 --folders NAME [NAME ...] Optional task folders under --input.
 --annotation PATH         Optional exported timeline annotation JSON.
@@ -133,4 +135,3 @@ Skipped source episodes and their reasons are recorded in
 --overwrite               Replace existing output task directories.
 --log-dir PATH            Also write logs to PATH/merge.log.
 ```
-

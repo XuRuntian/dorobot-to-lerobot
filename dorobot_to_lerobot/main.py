@@ -127,6 +127,16 @@ def output_name_from_common(common_record: dict[str, Any], fallback: str) -> str
     return safe_filename(name)
 
 
+def is_episode_folder(path: Path) -> bool:
+    return path.is_dir() and (path / "meta").is_dir() and (path / "data").is_dir()
+
+
+def is_task_folder(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    return any(is_episode_folder(child) for child in path.iterdir() if child.is_dir())
+
+
 def feature_names(info: dict[str, Any]) -> list[str]:
     features = info.get("features")
     if not isinstance(features, dict):
@@ -185,6 +195,23 @@ def select_annotation_group(
         if alias in groups:
             return groups[alias]
     return None
+
+
+def build_annotation_lookup(annotations: list[AnnotationRecord] | None) -> dict[str, AnnotationRecord]:
+    lookup: dict[str, AnnotationRecord] = {}
+    duplicates: set[str] = set()
+    for annotation in annotations or []:
+        if not annotation.source_episode_name:
+            continue
+        key = safe_filename(annotation.source_episode_name)
+        if key in lookup:
+            duplicates.add(key)
+            continue
+        lookup[key] = annotation
+
+    if duplicates:
+        LOGGER.warning("duplicate annotations for source episodes: %s", sorted(duplicates))
+    return lookup
 
 
 def validate_episode_dir(
@@ -394,6 +421,7 @@ def write_annotations(output_dir: Path, candidates: list[EpisodeCandidate], skip
                     "frame_count": candidate.frame_count,
                     "source_annotation_index": candidate.annotation.source_index,
                     "source_annotation_id": candidate.annotation.original_id,
+                    "source_annotation_episode": candidate.annotation.source_episode_name,
                     "subtasks": candidate.annotation.subtasks,
                 }
             )
@@ -438,8 +466,17 @@ def merge_task(
             except Exception:
                 pass
 
+    annotation_lookup = build_annotation_lookup(annotations)
+    used_annotation_indices: set[int] = set()
+
     for source_order, episode_dir in enumerate(episode_dirs):
-        annotation = annotations[source_order] if annotations and source_order < len(annotations) else None
+        if annotation_lookup:
+            annotation = annotation_lookup.get(safe_filename(episode_dir.name))
+        else:
+            annotation = annotations[source_order] if annotations and source_order < len(annotations) else None
+        if annotation is not None:
+            used_annotation_indices.add(annotation.source_index)
+
         candidate, skip = validate_episode_dir(
             task_path,
             episode_dir,
@@ -456,13 +493,34 @@ def merge_task(
     output_name = output_name_from_common(common_record_for_name or {}, task_path.name)
     output_dir = output_root / output_name
 
-    if annotations and len(annotations) > len(episode_dirs):
+    if annotations and annotation_lookup:
+        for annotation in annotations:
+            if annotation.source_index in used_annotation_indices:
+                continue
+            skipped.append(
+                SkipRecord(
+                    str(task_path),
+                    "annotation has no matching source episode",
+                    {
+                        "source_annotation_index": annotation.source_index,
+                        "original_id": annotation.original_id,
+                        "source_task_name": annotation.source_task_name,
+                        "source_episode_name": annotation.source_episode_name,
+                    },
+                )
+            )
+    elif annotations and len(annotations) > len(episode_dirs):
         for annotation in annotations[len(episode_dirs):]:
             skipped.append(
                 SkipRecord(
                     str(task_path),
                     "annotation has no matching source episode",
-                    {"source_annotation_index": annotation.source_index, "original_id": annotation.original_id},
+                    {
+                        "source_annotation_index": annotation.source_index,
+                        "original_id": annotation.original_id,
+                        "source_task_name": annotation.source_task_name,
+                        "source_episode_name": annotation.source_episode_name,
+                    },
                 )
             )
 
@@ -506,7 +564,13 @@ def discover_task_folders(input_root: Path, folders: list[str] | None) -> list[P
     if folders:
         task_paths = [input_root / folder for folder in folders]
     else:
-        task_paths = sorted([path for path in input_root.iterdir() if path.is_dir()], key=sort_key)
+        child_dirs = [path for path in input_root.iterdir() if path.is_dir()]
+        episode_children = [path for path in child_dirs if is_episode_folder(path)]
+        task_children = [path for path in child_dirs if is_task_folder(path)]
+        if episode_children and not task_children:
+            task_paths = [input_root]
+        else:
+            task_paths = sorted(task_children or child_dirs, key=sort_key)
     missing = [str(path) for path in task_paths if not path.is_dir()]
     if missing:
         raise FileNotFoundError(f"task folders not found: {missing}")
@@ -517,9 +581,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Merge dorobot single-episode folders into a valid LeRobot-style dataset."
     )
-    parser.add_argument("--input", required=True, type=Path, help="raw task parent directory")
+    parser.add_argument("--input", required=True, type=Path, help="raw task directory or task parent directory")
     parser.add_argument("--output", required=True, type=Path, help="merged dataset output root")
-    parser.add_argument("--folders", nargs="*", help="task folder names under --input; defaults to all folders")
+    parser.add_argument("--folders", nargs="*", help="optional task folder names under --input")
     parser.add_argument("--annotation", type=Path, help="raw exported timeline annotation JSON")
     parser.add_argument(
         "--default-task-id",

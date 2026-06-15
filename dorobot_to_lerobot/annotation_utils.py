@@ -6,6 +6,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 
 DEFAULT_TASK_ID = "default_task"
@@ -33,6 +34,8 @@ class AnnotationRecord:
     task_id: str
     source_index: int
     original_id: Any
+    source_task_name: str | None
+    source_episode_name: str | None
     subtasks: list[dict[str, Any]]
     validation_reasons: list[dict[str, Any]]
 
@@ -93,20 +96,45 @@ def coerce_frame(value: Any) -> int:
     raise ValueError("frame must be an integer")
 
 
+def observation_image_urls(item: dict[str, Any]) -> list[str]:
+    observation = item.get("observation")
+    if not isinstance(observation, dict):
+        return []
+    images = observation.get("images")
+    if not isinstance(images, dict):
+        return []
+    return [url for url in images.values() if isinstance(url, str)]
+
+
+def infer_source_names(item: dict[str, Any]) -> tuple[str | None, str | None]:
+    for url in observation_image_urls(item):
+        path_parts = [part for part in unquote(urlparse(url).path).split("/") if part]
+        for index, part in enumerate(path_parts[:-2]):
+            if part == "collect":
+                return safe_filename(path_parts[index + 1]), safe_filename(path_parts[index + 2])
+
+        for index, task_name in enumerate(path_parts[:-1]):
+            episode_name = path_parts[index + 1]
+            if episode_name.startswith(f"{task_name}_"):
+                return safe_filename(task_name), safe_filename(episode_name)
+
+    return None, None
+
+
 def infer_task_id(item: dict[str, Any], default_task_id: str = DEFAULT_TASK_ID) -> str:
     for key in ("task_id", "taskId", "task", "dataset", "project"):
         value = item.get(key)
         if isinstance(value, str) and value.strip():
             return safe_filename(value)
 
-    images = (item.get("observation") or {}).get("images") or {}
-    if isinstance(images, dict):
-        for url in images.values():
-            if not isinstance(url, str):
-                continue
-            match = re.search(r"Galbot_G1_([^/]+?)_\d+_\d+", url)
-            if match:
-                return safe_filename(match.group(1))
+    source_task_name, _ = infer_source_names(item)
+    if source_task_name:
+        return source_task_name
+
+    for url in observation_image_urls(item):
+        match = re.search(r"Galbot_G1_([^/]+?)_\d+_\d+", url)
+        if match:
+            return safe_filename(match.group(1))
 
     return safe_filename(default_task_id)
 
@@ -167,6 +195,10 @@ def extract_subtasks(item: dict[str, Any]) -> tuple[list[dict[str, Any]], list[d
         )
 
     subtasks.sort(key=lambda subtask: (subtask["start_frame"], subtask["end_frame"]))
+    if subtasks and subtasks[0]["start_frame"] == 1:
+        for subtask in subtasks:
+            subtask["start_frame"] -= 1
+            subtask["end_frame"] -= 1
     validation_reasons.extend(validate_subtasks(subtasks))
     return subtasks, validation_reasons
 
@@ -214,15 +246,17 @@ def load_annotation_groups(
     groups: dict[str, list[AnnotationRecord]] = defaultdict(list)
     for item_index, item in enumerate(raw_items):
         task_id = infer_task_id(item, default_task_id)
+        source_task_name, source_episode_name = infer_source_names(item)
         subtasks, validation_reasons = extract_subtasks(item)
         groups[task_id].append(
             AnnotationRecord(
                 task_id=task_id,
                 source_index=item_index,
                 original_id=item.get("id"),
+                source_task_name=source_task_name,
+                source_episode_name=source_episode_name,
                 subtasks=subtasks,
                 validation_reasons=validation_reasons,
             )
         )
     return dict(groups)
-
