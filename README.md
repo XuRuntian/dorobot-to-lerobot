@@ -111,7 +111,7 @@ The merge rewrites:
 - episode filenames under `data/`, `videos/`, and `depth/`
 - parquet columns `episode_index`, `index`, and `frame_index` when present
 - `meta/episodes.jsonl`
-- `meta/episodes_stats.jsonl`
+- `meta/episodes_stats.jsonl` with recomputed per-episode numeric `min`, `max`, `mean`, and `std` for columns declared in `info.json` features
 - `meta/info.json` fields `total_episodes`, `total_frames`, `total_videos`, and `splits`
 
 Subtask annotations are not embedded into parquet files. They are stored in

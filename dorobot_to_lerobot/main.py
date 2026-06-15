@@ -15,6 +15,7 @@ from dorobot_to_lerobot.annotation_utils import (
     load_annotation_groups,
     safe_filename,
 )
+from dorobot_to_lerobot.stats_utils import compute_episode_stats
 
 
 LOGGER = logging.getLogger("dorobot_merge")
@@ -333,10 +334,12 @@ def merge_meta_files(candidates: list[EpisodeCandidate], output_dir: Path, total
         episode_record["length"] = candidate.frame_count
         episodes_records.append(episode_record)
 
-        stats_record = pick_episode_record(read_jsonl(source_meta / "episodes_stats.jsonl"), candidate.source_episode_index)
-        if stats_record is not None:
-            stats_record["episode_index"] = new_index
-            stats_records.append(stats_record)
+        stats_record = compute_episode_stats(
+            output_dir / "data" / "chunk-000" / f"episode_{new_index:06d}.parquet",
+            new_index,
+            feature_names(candidate.info),
+        )
+        stats_records.append(stats_record)
 
         for jsonl_file in sorted(source_meta.glob("*.jsonl")):
             if jsonl_file.name in {"episodes.jsonl", "episodes_stats.jsonl"}:
